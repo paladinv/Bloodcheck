@@ -6,17 +6,15 @@
 // Bump CACHE_NAME to invalidate the cache on a new deploy.
 
 const CACHE_NAME = "healthscan-v1";
+const BASE_URL = self.registration.scope;
 
 // Files to pre-cache on install (the Vite build output names will differ;
 // this list covers the static assets that exist before build.  After running
 // `npm run build`, the hashed filenames in dist/ are cached on first visit via
 // the fetch handler below).
-const PRECACHE_FILES = [
-  "/",
-  "/manifest.json",
-  "/icon-192.svg",
-  "/icon-512.svg",
-];
+const PRECACHE_FILES = ["", "manifest.json", "icon-192.svg", "icon-512.svg"].map((path) =>
+  new URL(path, BASE_URL).toString()
+);
 
 // ── INSTALL — cache the app shell ──────────────────────────────────────────
 self.addEventListener("install", (event) => {
