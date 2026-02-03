@@ -147,7 +147,23 @@ To bust the cache on a new deploy, bump `CACHE_NAME` in `public/sw.js`
 
 ---
 
-## 7. Troubleshooting
+## 7. Detection notes (current logic)
+
+- The scan only analyzes the **toilet bowl area** (elliptical mask) to reduce false positives from surrounding surfaces.
+- Urine/stool presence is inferred with broad color profiles; results may show `Urine`, `Stool`, `Urine + Stool`, or `Unknown`.
+- A minimum blood-pixel threshold and ratio is required before detections are shown.
+
+---
+
+## 8. Exporting results
+
+- `Save Image` downloads the scan image with detection overlays.
+- `Export Scan Results` generates a PDF with the same visual hierarchy as the Scan Results screen.
+- A QR code on the results page links back to the app URL for quick access on another device.
+
+---
+
+## 9. Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
