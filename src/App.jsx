@@ -260,7 +260,7 @@ export default function HealthScanApp() {
   const toastTimeoutRef = useRef(null);
 
   // ── Start camera ──
-  const startCamera = useCallback(async () => {
+  const startCamera = useCallback(async ({ quiet = false } = {}) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } }
@@ -276,7 +276,12 @@ export default function HealthScanApp() {
       }
       setPhase("camera");
     } catch (e) {
-      alert("Camera access denied or unavailable. Please enable camera permissions.");
+      if (quiet) {
+        setToast("Tap Start Scan to enable the camera.");
+        setPhase("home");
+      } else {
+        alert("Camera access denied or unavailable. Please enable camera permissions.");
+      }
     }
   }, []);
 
@@ -436,6 +441,13 @@ export default function HealthScanApp() {
       toastTimeoutRef.current = null;
     };
   }, [toast]);
+
+  // ── Auto-open camera from shortcut link ──
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("scan") !== "1") return;
+    startCamera({ quiet: true });
+  }, [startCamera]);
 
   // ── Generate crop previews for each finding ──
   useEffect(() => {
@@ -626,6 +638,8 @@ export default function HealthScanApp() {
     ? (detections.some(d => d.severity === "urgent") ? "urgent" : detections.some(d => d.severity === "warning") ? "warning" : "caution")
     : null;
 
+  const scanShortcutUrl = `${window.location.origin}${window.location.pathname}?scan=1`;
+
   // ────────────────────────────────────────────────────────────────────────────
   // RENDER
   // ────────────────────────────────────────────────────────────────────────────
@@ -664,6 +678,19 @@ export default function HealthScanApp() {
             </svg>
             Start Scan
           </button>
+
+          <div style={styles.shortcutCard}>
+            <p style={styles.shortcutTitle}>iOS Scan Shortcut</p>
+            <p style={styles.shortcutText}>
+              Save a one-tap Home Screen shortcut that opens HealthScan directly to the scanner.
+            </p>
+            <a style={styles.shortcutLink} href={scanShortcutUrl}>
+              Open Scan Shortcut Link
+            </a>
+            <p style={styles.shortcutHint}>
+              Tip: In Safari, tap Share → Add to Home Screen to save this as a shortcut.
+            </p>
+          </div>
         </div>
       )}
 
@@ -837,6 +864,19 @@ export default function HealthScanApp() {
             <button style={styles.secondaryBtn} onClick={saveImage}>Save Image</button>
             <button style={styles.primaryBtn} onClick={exportScanResults}>Export Scan Results</button>
           </div>
+
+          <div style={styles.shortcutCard}>
+            <p style={styles.shortcutTitle}>iOS Scan Shortcut</p>
+            <p style={styles.shortcutText}>
+              Save a one-tap Home Screen shortcut that opens HealthScan directly to the scanner.
+            </p>
+            <a style={styles.shortcutLink} href={scanShortcutUrl}>
+              Open Scan Shortcut Link
+            </a>
+            <p style={styles.shortcutHint}>
+              Tip: In Safari, tap Share → Add to Home Screen to save this as a shortcut.
+            </p>
+          </div>
           <button style={styles.ghostBtn} onClick={reset}>New Scan</button>
         </div>
       )}
@@ -1009,6 +1049,36 @@ const styles = {
   resultActions: {
     display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, width: "100%",
   },
+
+  // SHORTCUT CARD
+  shortcutCard: {
+    background: "#0f172a",
+    border: "1px solid #334155",
+    borderRadius: 12,
+    padding: "14px 16px",
+    width: "100%",
+    boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  },
+  shortcutTitle: { margin: 0, fontSize: 13, fontWeight: 700, color: "#e2e8f0" },
+  shortcutText: { margin: 0, fontSize: 12.5, color: "#94a3b8", lineHeight: 1.5 },
+  shortcutLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "10px 14px",
+    borderRadius: 10,
+    background: "#1e293b",
+    border: "1px solid #334155",
+    color: "#93c5fd",
+    textDecoration: "none",
+    fontSize: 12.5,
+    fontWeight: 600,
+    width: "fit-content",
+  },
+  shortcutHint: { margin: 0, fontSize: 11.5, color: "#64748b" },
 
   // LIGHTING BAR (inside camera viewfinder)
   lightingBar: {
