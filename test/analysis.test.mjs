@@ -21,7 +21,7 @@ test("returns no detections for a neutral sample", () => {
   const data = image(width, height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const value = (Math.floor(x / 2) + Math.floor(y / 2)) % 2 ? 80 : 120;
+      const value = (Math.floor(x / 4) + Math.floor(y / 4)) % 2 ? 80 : 120;
       data.data.set([value, value, value, 255], (y * width + x) * 4);
     }
   }
@@ -47,4 +47,11 @@ test("marks a glare-heavy image as inconclusive", () => {
   const quality = assessImageQuality(data, width, height);
   assert.equal(quality.status, "inconclusive");
   assert.ok(quality.reasons.length > 0);
+});
+
+test("marks a flat low-detail image as inconclusive", () => {
+  const width = 160, height = 120;
+  const quality = assessImageQuality(image(width, height, [120, 120, 120]), width, height);
+  assert.equal(quality.status, "inconclusive");
+  assert.ok(quality.reasons.some((reason) => reason.includes("blurry")));
 });

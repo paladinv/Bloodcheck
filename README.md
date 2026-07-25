@@ -143,7 +143,7 @@ Safari does not show an install banner. The user must do it manually:
 | offline  | Shows a simple "You are offline" page if nothing is cached |
 
 To bust the cache on a new deploy, bump `CACHE_NAME` in `public/sw.js`
-(e.g. `healthscan-v2`).
+(e.g. `healthscan-v3`).
 
 ---
 
@@ -153,7 +153,7 @@ To bust the cache on a new deploy, bump `CACHE_NAME` in `public/sw.js`
 - Urine/stool presence is inferred with broad color profiles; results may show `Urine`, `Stool`, `Urine + Stool`, or `Unknown`.
 - A minimum blood-pixel threshold and ratio is required before detections are shown.
 - Analysis runs in a Web Worker when supported and is resized to a maximum dimension of 960 px to keep the interface responsive.
-- Scan quality checks detect darkness, glare, and insufficient visible detail. Poor-quality images are reported as inconclusive instead of being presented as a clean result.
+- Scan quality checks detect darkness, glare, and insufficient visible detail/blur. Poor-quality images are reported as inconclusive instead of being presented as a clean result.
 - Results describe blood-like color markers only; they are not a diagnosis and require clinical validation before medical use.
 
 ---

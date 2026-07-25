@@ -1,0 +1,37 @@
+- generic [ref=e35]:
+  - generic [ref=e36]:
+    - button "← Back" [ref=e37] [cursor=pointer]
+    - generic [ref=e38]: Scan Results
+  - img "Captured scan with detected color markers highlighted" [ref=e40]
+  - status [ref=e41]:
+    - generic [ref=e42]: "!"
+    - paragraph [ref=e43]: Inconclusive scan
+    - paragraph [ref=e44]: The image quality was not sufficient to interpret this scan reliably.
+    - list [ref=e45]:
+      - listitem [ref=e46]: The image is too blurry or has too little visible detail.
+    - button "Retake scan" [ref=e47] [cursor=pointer]
+  - generic [ref=e48]:
+    - paragraph [ref=e49]: Learn more
+    - link "Blood in urine (Mayo Clinic)" [ref=e50] [cursor=pointer]:
+      - /url: https://www.mayoclinic.org/diseases-conditions/blood-in-urine/symptoms-causes/syc-20353432
+    - link "Rectal bleeding (Mayo Clinic)" [ref=e51] [cursor=pointer]:
+      - /url: https://www.mayoclinic.org/symptoms/rectal-bleeding/basics/causes/sym-20050740
+  - generic [ref=e52]:
+    - generic [ref=e53]:
+      - paragraph [ref=e54]: Open the app on another device
+      - paragraph [ref=e55]: This QR code contains the app link, not your scan.
+    - img "HealthScan QR" [ref=e56]
+  - generic [ref=e57]:
+    - button "Share Image" [ref=e58] [cursor=pointer]
+    - button "Export Scan Results" [ref=e59] [cursor=pointer]
+  - generic [ref=e60]:
+    - button "Save Image" [ref=e61] [cursor=pointer]
+    - button "Retake Scan" [ref=e62] [cursor=pointer]
+  - paragraph [ref=e63]: "Scanned 24/07/2026, 18:34:09 · Sample type: unknown"
+  - generic [ref=e64]:
+    - paragraph [ref=e65]: iOS Scan Shortcut
+    - paragraph [ref=e66]: Save a one-tap Home Screen shortcut that opens HealthScan directly to the scanner.
+    - link "Open Scan Shortcut Link" [ref=e67] [cursor=pointer]:
+      - /url: http://127.0.0.1:4173/?scan=1
+    - paragraph [ref=e68]: "Tip: In Safari, tap Share → Add to Home Screen to save this as a shortcut."
+  - button "New Scan" [ref=e69] [cursor=pointer]

@@ -1,0 +1,23 @@
+- generic [ref=e4]:
+  - heading "HealthScan" [level=1] [ref=e10]
+  - paragraph [ref=e11]: Toilet health monitoring via blood detection in urine & stool
+  - generic [ref=e12]:
+    - paragraph [ref=e13]:
+      - text: This app screens for
+      - strong [ref=e14]: blood-like color markers
+      - text: — ranging from bright red to black — in urine or stool.
+    - paragraph [ref=e15]: ⚕️ It cannot confirm blood or diagnose a condition. If you feel faint, have severe pain, see clots, vomit blood, or notice black/tarry stool, seek urgent medical care.
+  - button "Start Scan" [ref=e16] [cursor=pointer]
+  - button "Use a photo instead" [ref=e20] [cursor=pointer]
+  - group [ref=e21]:
+    - generic "Privacy & limitations" [active] [ref=e22] [cursor=pointer]
+    - paragraph [ref=e30]: Photos are analyzed in your browser by this app and are not uploaded by HealthScan. Saving, exporting, or sharing a scan sends it to the destination you choose. The QR code opens the app only; it does not contain your scan.
+    - paragraph [ref=e31]: This is a screening aid, not a medical device or diagnosis. Delete downloaded files separately from your device.
+  - group [ref=e23]:
+    - generic "Optional on-device history" [ref=e24] [cursor=pointer]
+  - generic [ref=e25]:
+    - paragraph [ref=e26]: iOS Scan Shortcut
+    - paragraph [ref=e27]: Save a one-tap Home Screen shortcut that opens HealthScan directly to the scanner.
+    - link "Open Scan Shortcut Link" [ref=e28] [cursor=pointer]:
+      - /url: http://127.0.0.1:4173/?scan=1
+    - paragraph [ref=e29]: "Tip: In Safari, tap Share → Add to Home Screen to save this as a shortcut."

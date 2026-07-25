@@ -2,28 +2,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import * as scanAnalysis from "./analysis.js";
 
-// ─── COLOR SCIENCE: Blood Detection Ranges ───────────────────────────────────
-// Blood in urine/stool appears across a spectrum:
-//   Bright red    → fresh blood (urinary tract)
-//   Dark red      → older blood or GI bleed
-//   Brown/maroon  → digested blood (upper GI)
-//   Black (tarry) → heavily digested blood (upper GI - melena)
-// We detect these via HSL analysis on each pixel cluster.
-
-const BLOOD_PROFILES = [
-  { label: "Bright Red", hMin: 0, hMax: 15, sMin: 45, sMax: 100, lMin: 25, lMax: 55, color: "#ef4444", severity: "urgent" },
-  { label: "Dark Red", hMin: 340, hMax: 360, sMin: 40, sMax: 100, lMin: 15, lMax: 40, color: "#991b1b", severity: "urgent" },
-  { label: "Maroon", hMin: 0, hMax: 20, sMin: 30, sMax: 80, lMin: 10, lMax: 25, color: "#7f1d1d", severity: "warning" },
-  { label: "Brown Blood", hMin: 15, hMax: 40, sMin: 25, sMax: 70, lMin: 8, lMax: 22, color: "#b45309", severity: "warning" },
-  { label: "Black (Tarry)", hMin: 0, hMax: 360, sMin: 0, sMax: 30, lMin: 2, lMax: 10, color: "#1f2937", severity: "caution" },
-];
-
-// ─── CONTENT DETECTION: Urine/Stool Hints ────────────────────────────────────
-const CONTENT_PROFILES = {
-  urine: { label: "Urine", hMin: 35, hMax: 70, sMin: 15, sMax: 80, lMin: 35, lMax: 80, color: "#facc15" },
-  stool: { label: "Stool", hMin: 10, hMax: 35, sMin: 20, sMax: 75, lMin: 12, lMax: 45, color: "#92400e" },
-};
-
 // ─── LIGHTING CHECK ───────────────────────────────────────────────────────────
 // Thresholds tuned for typical indoor bathroom lighting on a phone camera.
 // Luminance per pixel = 0.299R + 0.587G + 0.114B  (ITU-R BT.601)
@@ -31,30 +9,9 @@ const CONTENT_PROFILES = {
 const LIGHT_DIM_MAX = 38;   // avg luminance below this → too dim
 const LIGHT_BRIGHT_MIN = 220; // avg luminance above this → too bright
 
-// ─── DETECTION CONSTRAINTS ───────────────────────────────────────────────────
-const BOWL_MASK = {
-  centerX: 0.5,
-  centerY: 0.56,
-  radiusX: 0.38,
-  radiusY: 0.44,
-};
-const MIN_BLOOD_PIXELS = 36;
-const MIN_BLOOD_RATIO = 0.002;
-const MIN_URINE_RATIO = 0.02;
-const MIN_STOOL_RATIO = 0.02;
 const FINDING_CROP_PAD_RATIO = 0.32;
 const FINDING_CROP_MIN_PAD = 14;
 const HISTORY_STORAGE_KEY = "healthscan-summary-history-v1";
-
-function isInBowlMask(x, y, width, height) {
-  const cx = width * BOWL_MASK.centerX;
-  const cy = height * BOWL_MASK.centerY;
-  const rx = width * BOWL_MASK.radiusX;
-  const ry = height * BOWL_MASK.radiusY;
-  const dx = (x - cx) / rx;
-  const dy = (y - cy) / ry;
-  return dx * dx + dy * dy <= 1;
-}
 
 function measureBrightness(videoEl, scratchCanvas) {
   if (!videoEl || videoEl.readyState < videoEl.HAVE_ENOUGH_DATA) return null;
@@ -83,154 +40,6 @@ function measureBrightness(videoEl, scratchCanvas) {
   if (avg < LIGHT_DIM_MAX) return { status: "dim", value: avg };
   if (avg > LIGHT_BRIGHT_MIN) return { status: "bright", value: avg };
   return { status: "ok", value: avg };
-}
-
-function rgbToHsl(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  let h, s, l = (max + min) / 2;
-  if (max === min) { h = s = 0; }
-  else {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    switch (max) {
-      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
-      case g: h = ((b - r) / d + 2) / 6; break;
-      case b: h = ((r - g) / d + 4) / 6; break;
-    }
-  }
-  return { h: h * 360, s: s * 100, l: l * 100 };
-}
-
-function matchesBlood(r, g, b) {
-  const { h, s, l } = rgbToHsl(r, g, b);
-  for (const p of BLOOD_PROFILES) {
-    const hMatch = p.hMin <= p.hMax
-      ? h >= p.hMin && h <= p.hMax
-      : h >= p.hMin || h <= p.hMax;
-    if (hMatch && s >= p.sMin && s <= p.sMax && l >= p.lMin && l <= p.lMax) {
-      return p;
-    }
-  }
-  return null;
-}
-
-function matchesContent(r, g, b) {
-  const { h, s, l } = rgbToHsl(r, g, b);
-  for (const [key, p] of Object.entries(CONTENT_PROFILES)) {
-    const hMatch = p.hMin <= p.hMax
-      ? h >= p.hMin && h <= p.hMax
-      : h >= p.hMin || h <= p.hMax;
-    if (hMatch && s >= p.sMin && s <= p.sMax && l >= p.lMin && l <= p.lMax) {
-      return key;
-    }
-  }
-  return null;
-}
-
-// ─── CLUSTER NEARBY BLOOD PIXELS INTO BOUNDING BOXES ─────────────────────────
-function clusterDetections(pixels, width, height) {
-  const GRID = 12; // cluster grid cell size in px
-  const gridW = Math.ceil(width / GRID);
-  const gridH = Math.ceil(height / GRID);
-  const grid = new Array(gridW * gridH).fill(null).map(() => ({ count: 0, profiles: {} }));
-
-  pixels.forEach(({ x, y, profile }) => {
-    const gx = Math.floor(x / GRID), gy = Math.floor(y / GRID);
-    const cell = grid[gy * gridW + gx];
-    cell.count++;
-    cell.profiles[profile.label] = (cell.profiles[profile.label] || 0) + 1;
-  });
-
-  // Merge adjacent cells with enough signal into bounding boxes
-  const visited = new Set();
-  const boxes = [];
-  const THRESHOLD = 3; // min pixels in a cell to count
-
-  for (let gy = 0; gy < gridH; gy++) {
-    for (let gx = 0; gx < gridW; gx++) {
-      const idx = gy * gridW + gx;
-      if (visited.has(idx) || grid[idx].count < THRESHOLD) continue;
-      // BFS flood fill to find connected cluster
-      const queue = [idx];
-      visited.add(idx);
-      let minX = gx, maxX = gx, minY = gy, maxY = gy;
-      let totalPixels = 0;
-      const profileTotals = {};
-      while (queue.length) {
-        const ci = queue.shift();
-        const cx = ci % gridW, cy = Math.floor(ci / gridW);
-        minX = Math.min(minX, cx); maxX = Math.max(maxX, cx);
-        minY = Math.min(minY, cy); maxY = Math.max(maxY, cy);
-        totalPixels += grid[ci].count;
-        Object.entries(grid[ci].profiles).forEach(([k, v]) => {
-          profileTotals[k] = (profileTotals[k] || 0) + v;
-        });
-        // Check 4 neighbors
-        const neighbors = [[cx-1,cy],[cx+1,cy],[cx,cy-1],[cx,cy+1]];
-        neighbors.forEach(([nx, ny]) => {
-          if (nx < 0 || ny < 0 || nx >= gridW || ny >= gridH) return;
-          const ni = ny * gridW + nx;
-          if (!visited.has(ni) && grid[ni].count >= THRESHOLD) {
-            visited.add(ni);
-            queue.push(ni);
-          }
-        });
-      }
-      if (totalPixels < 8) continue; // filter noise
-      // Dominant profile
-      const dominant = Object.entries(profileTotals).sort((a,b) => b[1]-a[1])[0];
-      const prof = BLOOD_PROFILES.find(p => p.label === dominant[0]);
-      boxes.push({
-        x: minX * GRID, y: minY * GRID,
-        w: (maxX - minX + 1) * GRID, h: (maxY - minY + 1) * GRID,
-        label: prof.label, color: prof.color, severity: prof.severity, pixels: totalPixels
-      });
-    }
-  }
-  return boxes;
-}
-
-// ─── ANALYZE IMAGE DATA ───────────────────────────────────────────────────────
-function analyzeImageData(imageData, width, height) {
-  const data = imageData.data;
-  const bloodPixels = [];
-  const contentCounts = { urine: 0, stool: 0 };
-  let bowlSamples = 0;
-  // Sample every 2nd pixel for performance
-  for (let y = 0; y < height; y += 2) {
-    for (let x = 0; x < width; x += 2) {
-      if (!isInBowlMask(x, y, width, height)) continue;
-      const i = (y * width + x) * 4;
-      const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
-      if (a < 128) continue;
-      bowlSamples++;
-      const contentType = matchesContent(r, g, b);
-      if (contentType) contentCounts[contentType]++;
-      const profile = matchesBlood(r, g, b);
-      if (profile) bloodPixels.push({ x, y, profile });
-    }
-  }
-  const bloodRatio = bowlSamples ? bloodPixels.length / bowlSamples : 0;
-  const contentSummary = {
-    urineRatio: bowlSamples ? contentCounts.urine / bowlSamples : 0,
-    stoolRatio: bowlSamples ? contentCounts.stool / bowlSamples : 0,
-  };
-  const hasUrine = contentSummary.urineRatio >= MIN_URINE_RATIO;
-  const hasStool = contentSummary.stoolRatio >= MIN_STOOL_RATIO;
-  const sampleType = hasUrine && hasStool ? "both" : hasUrine ? "urine" : hasStool ? "stool" : "unknown";
-
-  if (bloodPixels.length < MIN_BLOOD_PIXELS || bloodRatio < MIN_BLOOD_RATIO) {
-    return { detections: [], bloodPixels: bloodPixels.length, bloodRatio, sampleType, contentSummary };
-  }
-
-  return {
-    detections: clusterDetections(bloodPixels, width, height),
-    bloodPixels: bloodPixels.length,
-    bloodRatio,
-    sampleType,
-    contentSummary,
-  };
 }
 
 // ─── SEVERITY LEGEND INFO ─────────────────────────────────────────────────────
@@ -946,6 +755,7 @@ export default function HealthScanApp() {
               <video ref={videoRef} style={styles.video} playsInline autoPlay muted aria-label="Live camera view of the toilet bowl" />
               {/* Viewfinder corners */}
               <div style={styles.viewfinder}>
+                <div style={styles.bowlMaskGuide} aria-hidden="true" />
                 <div style={styles.corner("top-left")} />
                 <div style={styles.corner("top-right")} />
                 <div style={styles.corner("bottom-left")} />
@@ -969,7 +779,7 @@ export default function HealthScanApp() {
                 <span style={{ ...styles.lightingLabel, color: lightColor }}>{lightMsg}</span>
               </div>
               {/* Bottom hint */}
-              <div style={styles.cameraHint}>Point at the toilet bowl</div>
+              <div style={styles.cameraHint}>Keep the bowl inside the oval</div>
             </div>
             <div style={styles.cameraActions}>
               <button style={styles.cancelBtn} onClick={() => { stopCamera(); setPhase("home"); }}>Cancel</button>
@@ -1261,6 +1071,10 @@ const styles = {
   },
   video: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
   viewfinder: { position: "absolute", inset: "12%", pointerEvents: "none" },
+  bowlMaskGuide: {
+    position: "absolute", left: 0, width: "100%", top: 0, height: "116%",
+    border: "2px dashed #22c55e99", borderRadius: "50%", boxShadow: "inset 0 0 0 999px #0f172a18",
+  },
   corner: (pos) => {
     const base = { position: "absolute", width: 24, height: 24, borderColor: "#22c55e", borderStyle: "solid" };
     const map = {

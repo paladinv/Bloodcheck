@@ -5,7 +5,7 @@
 // first; if it fails we serve from cache.
 // Bump CACHE_NAME to invalidate the cache on a new deploy.
 
-const CACHE_NAME = "healthscan-v2";
+const CACHE_NAME = "healthscan-v3";
 const BASE_URL = self.registration.scope;
 
 // Files to pre-cache on install (the Vite build output names will differ;

@@ -10,6 +10,11 @@
 - Lazy-load PDF/QR dependencies and improve service-worker update handling.
 - Add automated analysis tests and documentation for privacy and limitations.
 
+## 1.2.1 - 2026-07-24
+- Remove the duplicate in-component classifier so the worker and fallback always use one source of truth.
+- Add an oval capture guide that matches the analysis region and a lightweight blur/detail quality check.
+- Refresh the service-worker cache for the updated release.
+
 ## 1.1.0 - 2026-02-03
 - Limit blood analysis to the toilet bowl area to reduce false positives.
 - Detect urine/stool presence and handle mixed samples.

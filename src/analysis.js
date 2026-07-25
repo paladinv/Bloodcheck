@@ -119,34 +119,47 @@ function clusterDetections(pixels, width, height) {
 
 export function assessImageQuality(imageData, width, height) {
   const data = imageData.data;
-  let count = 0, sum = 0, sumSquares = 0, clipped = 0, dark = 0;
-  for (let y = 0; y < height; y += 2) {
-    for (let x = 0; x < width; x += 2) {
+  let count = 0, sum = 0, clipped = 0, dark = 0, edgeTotal = 0, edgeCount = 0;
+  const luminanceAt = (x, y) => {
+    const i = (y * width + x) * 4;
+    return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  };
+  // Quality is advisory, so sample more sparsely than the classifier itself.
+  // This keeps the extra focus/detail gate cheaper than the existing analysis.
+  for (let y = 0; y < height; y += 4) {
+    for (let x = 0; x < width; x += 4) {
       if (!isInBowlMask(x, y, width, height)) continue;
-      const i = (y * width + x) * 4;
-      const luminance = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      const luminance = luminanceAt(x, y);
       count++;
       sum += luminance;
-      sumSquares += luminance * luminance;
       if (luminance >= 250) clipped++;
       if (luminance <= 15) dark++;
+      if (x + 4 < width && isInBowlMask(x + 4, y, width, height)) {
+        edgeTotal += Math.abs(luminance - luminanceAt(x + 4, y));
+        edgeCount++;
+      }
+      if (y + 4 < height && isInBowlMask(x, y + 4, width, height)) {
+        edgeTotal += Math.abs(luminance - luminanceAt(x, y + 4));
+        edgeCount++;
+      }
     }
   }
   if (!count) return { status: "inconclusive", reasons: ["The bowl area could not be identified."], averageLuminance: 0, clippedRatio: 0 };
   const averageLuminance = sum / count;
-  const variance = Math.max(0, sumSquares / count - averageLuminance ** 2);
   const clippedRatio = clipped / count;
   const darkRatio = dark / count;
+  const detailScore = edgeCount ? edgeTotal / edgeCount : 0;
   const reasons = [];
   if (averageLuminance < 38 || darkRatio > 0.45) reasons.push("The scan is too dark.");
   if (averageLuminance > 220 || clippedRatio > 0.35) reasons.push("Glare or overexposure obscures the sample.");
-  if (variance < 18) reasons.push("The image has too little visible detail.");
+  if (detailScore < 2.5) reasons.push("The image is too blurry or has too little visible detail.");
   return {
     status: reasons.length ? "inconclusive" : "usable",
     reasons,
     averageLuminance,
     clippedRatio,
     darkRatio,
+    detailScore,
   };
 }
 
