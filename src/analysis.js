@@ -21,11 +21,11 @@ export const MIN_BLOOD_RATIO = 0.002;
 export const MIN_URINE_RATIO = 0.02;
 export const MIN_STOOL_RATIO = 0.02;
 
-export function isInBowlMask(x, y, width, height) {
-  const cx = width * BOWL_MASK.centerX;
-  const cy = height * BOWL_MASK.centerY;
-  const rx = width * BOWL_MASK.radiusX;
-  const ry = height * BOWL_MASK.radiusY;
+export function isInBowlMask(x, y, width, height, bowlMask = BOWL_MASK) {
+  const cx = width * bowlMask.centerX;
+  const cy = height * bowlMask.centerY;
+  const rx = width * bowlMask.radiusX;
+  const ry = height * bowlMask.radiusY;
   const dx = (x - cx) / rx;
   const dy = (y - cy) / ry;
   return dx * dx + dy * dy <= 1;
@@ -117,7 +117,7 @@ function clusterDetections(pixels, width, height) {
   return boxes;
 }
 
-export function assessImageQuality(imageData, width, height) {
+export function assessImageQuality(imageData, width, height, bowlMask = BOWL_MASK) {
   const data = imageData.data;
   let count = 0, sum = 0, clipped = 0, dark = 0, edgeTotal = 0, edgeCount = 0;
   const luminanceAt = (x, y) => {
@@ -128,17 +128,17 @@ export function assessImageQuality(imageData, width, height) {
   // This keeps the extra focus/detail gate cheaper than the existing analysis.
   for (let y = 0; y < height; y += 4) {
     for (let x = 0; x < width; x += 4) {
-      if (!isInBowlMask(x, y, width, height)) continue;
+      if (!isInBowlMask(x, y, width, height, bowlMask)) continue;
       const luminance = luminanceAt(x, y);
       count++;
       sum += luminance;
       if (luminance >= 250) clipped++;
       if (luminance <= 15) dark++;
-      if (x + 4 < width && isInBowlMask(x + 4, y, width, height)) {
+      if (x + 4 < width && isInBowlMask(x + 4, y, width, height, bowlMask)) {
         edgeTotal += Math.abs(luminance - luminanceAt(x + 4, y));
         edgeCount++;
       }
-      if (y + 4 < height && isInBowlMask(x, y + 4, width, height)) {
+      if (y + 4 < height && isInBowlMask(x, y + 4, width, height, bowlMask)) {
         edgeTotal += Math.abs(luminance - luminanceAt(x, y + 4));
         edgeCount++;
       }
@@ -163,14 +163,14 @@ export function assessImageQuality(imageData, width, height) {
   };
 }
 
-export function analyzeImageData(imageData, width, height) {
+export function analyzeImageData(imageData, width, height, bowlMask = BOWL_MASK) {
   const data = imageData.data;
   const bloodPixels = [];
   const contentCounts = { urine: 0, stool: 0 };
   let bowlSamples = 0;
   for (let y = 0; y < height; y += 2) {
     for (let x = 0; x < width; x += 2) {
-      if (!isInBowlMask(x, y, width, height)) continue;
+      if (!isInBowlMask(x, y, width, height, bowlMask)) continue;
       const i = (y * width + x) * 4;
       if (data[i + 3] < 128) continue;
       bowlSamples++;
@@ -188,7 +188,7 @@ export function analyzeImageData(imageData, width, height) {
   const hasUrine = urineRatio >= MIN_URINE_RATIO;
   const hasStool = stoolRatio >= MIN_STOOL_RATIO;
   const sampleType = hasUrine && hasStool ? "both" : hasUrine ? "urine" : hasStool ? "stool" : "unknown";
-  const quality = assessImageQuality(imageData, width, height);
+  const quality = assessImageQuality(imageData, width, height, bowlMask);
   return {
     detections: bloodPixels.length >= MIN_BLOOD_PIXELS && bloodRatio >= MIN_BLOOD_RATIO ? clusterDetections(bloodPixels, width, height) : [],
     bloodPixels: bloodPixels.length,

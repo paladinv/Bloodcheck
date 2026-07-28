@@ -149,7 +149,7 @@ To bust the cache on a new deploy, bump `CACHE_NAME` in `public/sw.js`
 
 ## 7. Detection notes (current logic)
 
-- The scan only analyzes the **toilet bowl area** (elliptical mask) to reduce false positives from surrounding surfaces.
+- The scan analyzes the selected **toilet bowl area** (elliptical mask) to reduce false positives from surrounding surfaces. Camera users can move and resize this area before capture.
 - Urine/stool presence is inferred with broad color profiles; results may show `Urine`, `Stool`, `Urine + Stool`, or `Unknown`.
 - A minimum blood-pixel threshold and ratio is required before detections are shown.
 - Analysis runs in a Web Worker when supported and is resized to a maximum dimension of 960 px to keep the interface responsive.
@@ -172,7 +172,7 @@ To bust the cache on a new deploy, bump `CACHE_NAME` in `public/sw.js`
 - HealthScan processes captured images locally in the browser. This app does not upload scan images to a server.
 - Saving, exporting, or sharing is an explicit device action and may copy the image outside the app.
 - Resetting a scan clears the in-memory app state. Files already downloaded or shared must be deleted separately from the device or destination.
-- Optional history stores summary metadata only—never raw images—and can be disabled and deleted from the home screen.
+- Optional history stores summary metadata only—never raw images—and can be disabled and deleted from the home screen. It is not encrypted or protected with an app passcode.
 - The color-based screening logic can be affected by lighting, glare, camera differences, cleaning products, food coloring, and other visual factors. Do not use it to rule out illness or delay medical care.
 
 ---
@@ -184,7 +184,7 @@ npm test
 npm run build
 ```
 
-The tests cover neutral images, a synthetic bright-red cluster, and glare-driven inconclusive results. Clinical validation still requires a clinician-reviewed, labeled dataset and prospective testing.
+The tests cover neutral images, a synthetic bright-red cluster, glare-driven inconclusive results, and caller-provided framing masks. Clinical validation, real-device camera testing, and an assistive-technology audit remain release gates; see [docs/VALIDATION.md](docs/VALIDATION.md).
 
 ---
 

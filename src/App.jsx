@@ -12,6 +12,18 @@ const LIGHT_BRIGHT_MIN = 220; // avg luminance above this → too bright
 const FINDING_CROP_PAD_RATIO = 0.32;
 const FINDING_CROP_MIN_PAD = 14;
 const HISTORY_STORAGE_KEY = "healthscan-summary-history-v1";
+const APP_VERSION = "1.2.2";
+
+function clampBowlMask(mask) {
+  const radiusX = Math.min(0.5, Math.max(0.22, Number(mask.radiusX)));
+  const radiusY = Math.min(0.5, Math.max(0.25, Number(mask.radiusY)));
+  return {
+    centerX: Math.min(1 - radiusX, Math.max(radiusX, Number(mask.centerX))),
+    centerY: Math.min(1 - radiusY, Math.max(radiusY, Number(mask.centerY))),
+    radiusX,
+    radiusY,
+  };
+}
 
 function measureBrightness(videoEl, scratchCanvas) {
   if (!videoEl || videoEl.readyState < videoEl.HAVE_ENOUGH_DATA) return null;
@@ -63,6 +75,10 @@ export default function HealthScanApp() {
   const [scanQuality, setScanQuality] = useState({ status: "unknown", reasons: [] });
   const [analysisError, setAnalysisError] = useState(null);
   const [scanTimestamp, setScanTimestamp] = useState(null);
+  const [scanSource, setScanSource] = useState("camera");
+  const [bowlMask, setBowlMask] = useState(() => ({ ...scanAnalysis.BOWL_MASK }));
+  const [capturedBowlMask, setCapturedBowlMask] = useState(() => ({ ...scanAnalysis.BOWL_MASK }));
+  const [feedbackChoice, setFeedbackChoice] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
   const [historyEnabled, setHistoryEnabled] = useState(() => {
     try { return window.localStorage.getItem(`${HISTORY_STORAGE_KEY}:enabled`) === "1"; }
@@ -150,9 +166,11 @@ export default function HealthScanApp() {
     const url = canvas.toDataURL("image/jpeg", 0.92);
     setImageUrl(url);
     setScanTimestamp(new Date().toISOString());
+    setScanSource("camera");
+    setCapturedBowlMask(bowlMask);
     stopCamera();
     setPhase("scanning");
-  }, [stopCamera]);
+  }, [bowlMask, stopCamera]);
 
   const handleFileSelect = useCallback((event) => {
     const file = event.target.files?.[0];
@@ -166,6 +184,8 @@ export default function HealthScanApp() {
     reader.onload = () => {
       setAnalysisError(null);
       setScanTimestamp(new Date().toISOString());
+      setScanSource("photo");
+      setCapturedBowlMask({ ...scanAnalysis.BOWL_MASK });
       setImageUrl(reader.result);
       setPhase("scanning");
     };
@@ -235,7 +255,7 @@ export default function HealthScanApp() {
         setPhase("results");
       };
       if (typeof Worker === "undefined") {
-        handleResult(scanAnalysis.analyzeImageData(imageData, analysisWidth, analysisHeight));
+        handleResult(scanAnalysis.analyzeImageData(imageData, analysisWidth, analysisHeight, capturedBowlMask));
         return;
       }
       worker = new Worker(new URL("./analysis.worker.js", import.meta.url), { type: "module" });
@@ -254,14 +274,14 @@ export default function HealthScanApp() {
           setPhase("results");
         }
       };
-      worker.postMessage({ imageData, width: analysisWidth, height: analysisHeight }, [imageData.data.buffer]);
+      worker.postMessage({ imageData, width: analysisWidth, height: analysisHeight, bowlMask: capturedBowlMask }, [imageData.data.buffer]);
     };
     img.src = imageUrl;
     return () => {
       cancelled = true;
       worker?.terminate();
     };
-  }, [phase, imageUrl]);
+  }, [phase, imageUrl, capturedBowlMask]);
 
   // ── Draw overlay on results ──
   useEffect(() => {
@@ -330,6 +350,9 @@ export default function HealthScanApp() {
     setAnalysisError(null);
     setScanTimestamp(null);
     setCameraError(null);
+    setFeedbackChoice(null);
+    setBowlMask({ ...scanAnalysis.BOWL_MASK });
+    setCapturedBowlMask({ ...scanAnalysis.BOWL_MASK });
     setPhase("home");
   };
 
@@ -338,6 +361,7 @@ export default function HealthScanApp() {
     setDetections([]);
     setScanQuality({ status: "unknown", reasons: [] });
     setAnalysisError(null);
+    setFeedbackChoice(null);
     startCamera();
   }, [startCamera]);
 
@@ -477,6 +501,26 @@ export default function HealthScanApp() {
       }
     }, "image/png");
   }, [saveImage]);
+
+  const downloadQualityFeedback = useCallback(() => {
+    if (!feedbackChoice) return;
+    const payload = {
+      schemaVersion: 1,
+      appVersion: APP_VERSION,
+      feedback: feedbackChoice,
+      scanQuality: scanQuality.status,
+      qualityReasons: scanQuality.reasons,
+      scanSource,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "healthscan-quality-feedback.json";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    setToast("Feedback file saved. It contains no scan image or health result.");
+  }, [feedbackChoice, scanQuality, scanSource]);
 
   // Highest severity found
   const highestSeverity = detections.length
@@ -748,19 +792,21 @@ export default function HealthScanApp() {
           : "Lighting OK";
         // Normalized bar fill: map [0..255] → [0..100]%
         const barPct = lightingStatus ? Math.round((lightingStatus.value / 255) * 100) : 50;
+        const bowlGuideStyle = {
+          ...styles.bowlMaskGuide,
+          left: `${(bowlMask.centerX - bowlMask.radiusX) * 100}%`,
+          top: `${(bowlMask.centerY - bowlMask.radiusY) * 100}%`,
+          width: `${bowlMask.radiusX * 200}%`,
+          height: `${bowlMask.radiusY * 200}%`,
+        };
+        const updateBowlMask = (field, value) => setBowlMask((current) => clampBowlMask({ ...current, [field]: value }));
 
         return (
           <div style={styles.screen}>
             <div style={styles.cameraContainer}>
               <video ref={videoRef} style={styles.video} playsInline autoPlay muted aria-label="Live camera view of the toilet bowl" />
               {/* Viewfinder corners */}
-              <div style={styles.viewfinder}>
-                <div style={styles.bowlMaskGuide} aria-hidden="true" />
-                <div style={styles.corner("top-left")} />
-                <div style={styles.corner("top-right")} />
-                <div style={styles.corner("bottom-left")} />
-                <div style={styles.corner("bottom-right")} />
-              </div>
+              <div style={styles.viewfinder} aria-hidden="true"><div style={bowlGuideStyle} /></div>
               {/* Lighting indicator bar — sits at the top of the viewfinder */}
               <div style={styles.lightingBar}>
                 <span style={{ fontSize: 14 }}>{lightIcon}</span>
@@ -779,7 +825,7 @@ export default function HealthScanApp() {
                 <span style={{ ...styles.lightingLabel, color: lightColor }}>{lightMsg}</span>
               </div>
               {/* Bottom hint */}
-              <div style={styles.cameraHint}>Keep the bowl inside the oval</div>
+              <div style={styles.cameraHint}>Keep the sample inside the oval</div>
             </div>
             <div style={styles.cameraActions}>
               <button style={styles.cancelBtn} onClick={() => { stopCamera(); setPhase("home"); }}>Cancel</button>
@@ -800,6 +846,22 @@ export default function HealthScanApp() {
                   : "Step back or turn off direct overhead light to reduce glare."}
               </p>
             )}
+            <details style={styles.frameControls}>
+              <summary style={styles.privacySummary}>Adjust scan area</summary>
+              <p style={styles.privacyText}>Move and resize the oval to cover the bowl area you want analyzed.</p>
+              <label style={styles.rangeLabel}>Horizontal position
+                <input type="range" min="0.22" max="0.78" step="0.01" value={bowlMask.centerX} onChange={(event) => updateBowlMask("centerX", event.target.value)} />
+              </label>
+              <label style={styles.rangeLabel}>Vertical position
+                <input type="range" min="0.25" max="0.75" step="0.01" value={bowlMask.centerY} onChange={(event) => updateBowlMask("centerY", event.target.value)} />
+              </label>
+              <label style={styles.rangeLabel}>Oval width
+                <input type="range" min="0.22" max="0.5" step="0.01" value={bowlMask.radiusX} onChange={(event) => updateBowlMask("radiusX", event.target.value)} />
+              </label>
+              <label style={styles.rangeLabel}>Oval height
+                <input type="range" min="0.25" max="0.5" step="0.01" value={bowlMask.radiusY} onChange={(event) => updateBowlMask("radiusY", event.target.value)} />
+              </label>
+            </details>
           </div>
         );
       })()}
@@ -939,6 +1001,16 @@ export default function HealthScanApp() {
 
           <p style={styles.scanMeta}>Scanned {scanTimestamp ? new Date(scanTimestamp).toLocaleString() : "just now"} · Sample type: {(sampleTypeOverride || sampleType) === "both" ? "Urine + stool" : (sampleTypeOverride || sampleType)}</p>
 
+          <div style={styles.feedbackCard}>
+            <p style={styles.shortcutTitle}>Help improve scan quality</p>
+            <p style={styles.privacyText}>Optional and photo-free. HealthScan does not send this feedback; you choose whether to share the downloaded file.</p>
+            <div style={styles.feedbackChoices}>
+              <button style={{ ...styles.feedbackBtn, ...(feedbackChoice === "helpful" ? styles.feedbackBtnActive : {}) }} onClick={() => setFeedbackChoice("helpful")} aria-pressed={feedbackChoice === "helpful"}>Helpful</button>
+              <button style={{ ...styles.feedbackBtn, ...(feedbackChoice === "needs-improvement" ? styles.feedbackBtnActive : {}) }} onClick={() => setFeedbackChoice("needs-improvement")} aria-pressed={feedbackChoice === "needs-improvement"}>Needs improvement</button>
+            </div>
+            {feedbackChoice && <button style={styles.clearHistoryBtn} onClick={downloadQualityFeedback}>Download feedback file</button>}
+          </div>
+
           <div style={styles.shortcutCard}>
             <p style={styles.shortcutTitle}>iOS Scan Shortcut</p>
             <p style={styles.shortcutText}>
@@ -1039,6 +1111,13 @@ const styles = {
   historyList: { display: "flex", flexDirection: "column", gap: 6, marginTop: 12 },
   historyRow: { display: "flex", justifyContent: "space-between", gap: 12, color: "#94a3b8", fontSize: 11.5, borderTop: "1px solid #1e293b", paddingTop: 6 },
   clearHistoryBtn: { marginTop: 12, background: "transparent", color: "#fca5a5", border: "1px solid #7f1d1d", borderRadius: 8, padding: "7px 10px", fontSize: 11.5, cursor: "pointer" },
+  feedbackCard: {
+    width: "100%", boxSizing: "border-box", background: "#0f172a", border: "1px solid #334155",
+    borderRadius: 12, padding: "14px 16px",
+  },
+  feedbackChoices: { display: "flex", gap: 8, marginTop: 12 },
+  feedbackBtn: { flex: 1, background: "#1e293b", color: "#cbd5e1", border: "1px solid #475569", borderRadius: 8, padding: "8px 10px", fontSize: 12, cursor: "pointer" },
+  feedbackBtnActive: { background: "#14532d", borderColor: "#22c55e", color: "#dcfce7" },
 
   // BUTTONS
   primaryBtn: {
@@ -1070,11 +1149,16 @@ const styles = {
     background: "#1e293b", border: "1px solid #334155", aspectRatio: "4/3",
   },
   video: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
-  viewfinder: { position: "absolute", inset: "12%", pointerEvents: "none" },
+  viewfinder: { position: "absolute", inset: 0, pointerEvents: "none" },
   bowlMaskGuide: {
-    position: "absolute", left: 0, width: "100%", top: 0, height: "116%",
+    position: "absolute",
     border: "2px dashed #22c55e99", borderRadius: "50%", boxShadow: "inset 0 0 0 999px #0f172a18",
   },
+  frameControls: {
+    width: "100%", maxWidth: 320, boxSizing: "border-box", background: "#0f172a", border: "1px solid #334155",
+    borderRadius: 12, padding: "12px 14px", color: "#94a3b8",
+  },
+  rangeLabel: { display: "grid", gridTemplateColumns: "1fr 120px", alignItems: "center", gap: 10, marginTop: 10, color: "#cbd5e1", fontSize: 12 },
   corner: (pos) => {
     const base = { position: "absolute", width: 24, height: 24, borderColor: "#22c55e", borderStyle: "solid" };
     const map = {

@@ -41,6 +41,19 @@ test("detects a sufficiently large bright-red cluster inside the bowl mask", () 
   assert.equal(result.detections[0].severity, "urgent");
 });
 
+test("uses the caller-provided framing mask instead of the default region", () => {
+  const width = 160, height = 120;
+  const data = image(width, height);
+  paint(data, width, 52, 42, 108, 92, [220, 20, 20]);
+  const result = analyzeImageData(data, width, height, {
+    centerX: 0.16,
+    centerY: 0.22,
+    radiusX: 0.14,
+    radiusY: 0.16,
+  });
+  assert.equal(result.detections.length, 0);
+});
+
 test("marks a glare-heavy image as inconclusive", () => {
   const width = 160, height = 120;
   const data = image(width, height, [255, 255, 255]);

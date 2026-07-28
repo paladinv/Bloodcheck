@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.2 - 2026-07-27
+- Replace the fixed capture region with an adjustable oval that is carried through worker and fallback analysis.
+- Add opt-in, photo-free scan-quality feedback export; feedback is not uploaded by the app.
+- Document clinical validation, real-device camera, VoiceOver/TalkBack, and encrypted-history release gates.
+- Refresh the service-worker cache for the updated release.
+
 ## 1.2.0 - 2026-07-23
 - Add scan-quality gating with inconclusive results for dark, glare-heavy, or low-detail images.
 - Move analysis into a testable module and Web Worker with scaled image processing.
