@@ -1,6 +1,24 @@
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import * as scanAnalysis from "./analysis.js";
+import { createTranslator, LANGUAGES, loadLanguagePreference, saveLanguagePreference } from "./i18n.js";
+import {
+  loadAccessibilityPreferences,
+  normalizeAccessibilityPreferences,
+  saveAccessibilityPreferences,
+} from "./preferences.js";
+import { calculatePreviewQuality, canCaptureFromPreflight, getPreflightItems, PREVIEW_DIM } from "./preflight.js";
+import { lazy, Suspense } from "react";
+import SettingsErrorBoundary from "./SettingsErrorBoundary.jsx";
+
+const HISTORY_TIMEOUT_OPTIONS = [0, 1, 5, 15, 30];
+const DEFAULT_HISTORY_TIMEOUT_MINUTES = 5;
+const SYMPTOM_CATEGORIES = ["pain", "bleeding", "bowel-change", "urinary-change", "fever", "dizziness", "other"];
+const SYMPTOM_SEVERITIES = ["unknown", "mild", "moderate", "severe"];
+const normalizeHistoryTimeoutMinutes = (value) => HISTORY_TIMEOUT_OPTIONS.includes(Number(value)) ? Number(value) : DEFAULT_HISTORY_TIMEOUT_MINUTES;
+const SettingsPanel = lazy(() => import("./SettingsPanel.jsx"));
+const historyApi = () => import("./history.js");
+const telemetryApi = () => import("./telemetry.js");
 
 // ─── LIGHTING CHECK ───────────────────────────────────────────────────────────
 // Thresholds tuned for typical indoor bathroom lighting on a phone camera.
@@ -11,7 +29,7 @@ const LIGHT_BRIGHT_MIN = 220; // avg luminance above this → too bright
 
 const FINDING_CROP_PAD_RATIO = 0.32;
 const FINDING_CROP_MIN_PAD = 14;
-const HISTORY_STORAGE_KEY = "healthscan-summary-history-v1";
+const ACCESSIBILITY_SCALE = { normal: 1, large: 1.12, "extra-large": 1.25 };
 const APP_VERSION = "1.2.2";
 
 function clampBowlMask(mask) {
@@ -80,17 +98,29 @@ export default function HealthScanApp() {
   const [capturedBowlMask, setCapturedBowlMask] = useState(() => ({ ...scanAnalysis.BOWL_MASK }));
   const [feedbackChoice, setFeedbackChoice] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
-  const [historyEnabled, setHistoryEnabled] = useState(() => {
-    try { return window.localStorage.getItem(`${HISTORY_STORAGE_KEY}:enabled`) === "1"; }
-    catch { return false; }
-  });
-  const [historyRecords, setHistoryRecords] = useState(() => {
-    try {
-      if (window.localStorage.getItem(`${HISTORY_STORAGE_KEY}:enabled`) !== "1") return [];
-      const stored = window.localStorage.getItem(HISTORY_STORAGE_KEY);
-      return stored ? JSON.parse(stored) : [];
-    } catch { return []; }
-  });
+  const [language, setLanguage] = useState(() => loadLanguagePreference(window.localStorage));
+  const [accessibilityPrefs, setAccessibilityPrefs] = useState(() => loadAccessibilityPreferences(window.localStorage));
+  const [historyStatus, setHistoryStatus] = useState({ available: Boolean(window.indexedDB && window.crypto?.subtle && window.crypto?.getRandomValues), configured: false });
+  const [historyUnlocked, setHistoryUnlocked] = useState(false);
+  const [historyRecords, setHistoryRecords] = useState([]);
+  const [historyFormMode, setHistoryFormMode] = useState("closed");
+  const [historyPasscode, setHistoryPasscode] = useState("");
+  const [historyConfirmPasscode, setHistoryConfirmPasscode] = useState("");
+  const [historyError, setHistoryError] = useState(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyResetPending, setHistoryResetPending] = useState(false);
+  const [historyTimeoutMinutes, setHistoryTimeoutMinutes] = useState(DEFAULT_HISTORY_TIMEOUT_MINUTES);
+  const [recoveryMode, setRecoveryMode] = useState("closed");
+  const [recoveryPassphrase, setRecoveryPassphrase] = useState("");
+  const [recoveryFile, setRecoveryFile] = useState(null);
+  const [recoveryError, setRecoveryError] = useState(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [symptomNote, setSymptomNote] = useState("");
+  const [medicationNote, setMedicationNote] = useState("");
+  const [symptomTimeline, setSymptomTimeline] = useState([]);
+  const [telemetryOptIn, setTelemetryOptInState] = useState(false);
+  const [settingsLoadKey, setSettingsLoadKey] = useState(0);
+  const [previewState, setPreviewState] = useState({ cameraReady: false, frameReady: false, bowlVisible: false, lighting: "unknown", detail: "unknown", averageLuminance: 0, detailScore: 0 });
   const [lightingStatus, setLightingStatus] = useState(null); // { status: "dim"|"ok"|"bright", value }
   const [cameraError, setCameraError] = useState(null);
   const videoRef = useRef(null);
@@ -102,6 +132,14 @@ export default function HealthScanApp() {
   const streamRef = useRef(null);
   const lightingIntervalRef = useRef(null);
   const toastTimeoutRef = useRef(null);
+  const historyKeyRef = useRef(null);
+  const lastHistoryActivityRef = useRef(Date.now());
+  const historyRecordIdRef = useRef(null);
+  const telemetryRecordedForRef = useRef(null);
+  const t = useMemo(() => createTranslator(language), [language]);
+  const preflightItems = getPreflightItems({ cameraReady: previewState.cameraReady, preview: previewState });
+  const canCapture = canCaptureFromPreflight(preflightItems);
+  const rootClass = accessibilityPrefs.contrast === "high" ? "hs-root hs-high-contrast" : "hs-root";
 
   // ── Start camera ──
   const startCamera = useCallback(async ({ quiet = false } = {}) => {
@@ -150,6 +188,120 @@ export default function HealthScanApp() {
     }
   }, []);
 
+  useEffect(() => {
+    if (phase !== "camera" || !videoRef.current || !streamRef.current) return;
+    videoRef.current.srcObject = streamRef.current;
+    videoRef.current.play().catch(() => setToast("Camera playback was blocked. Tap Start scan again to allow playback."));
+  }, [phase]);
+
+  const refreshHistoryStatus = useCallback(async () => {
+    try {
+      setHistoryStatus(await (await historyApi()).getHistoryStatus());
+    } catch {
+      setHistoryStatus({ available: false, configured: false });
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const savedTimeout = window.localStorage.getItem("healthscan-history-timeout-minutes-v1");
+      setHistoryTimeoutMinutes(normalizeHistoryTimeoutMinutes(savedTimeout));
+    } catch {}
+    return () => { historyKeyRef.current = null; };
+  }, []);
+
+  const updateHistoryTimeout = useCallback((value) => {
+    const normalized = normalizeHistoryTimeoutMinutes(value);
+    setHistoryTimeoutMinutes(normalized);
+    try { window.localStorage.setItem("healthscan-history-timeout-minutes-v1", String(normalized)); } catch {}
+    lastHistoryActivityRef.current = Date.now();
+  }, []);
+
+  useEffect(() => {
+    if (!historyUnlocked || historyTimeoutMinutes === 0) return undefined;
+    const markActivity = () => { lastHistoryActivityRef.current = Date.now(); };
+    const events = ["pointerdown", "keydown", "touchstart"];
+    events.forEach((event) => window.addEventListener(event, markActivity, { passive: true }));
+    const interval = window.setInterval(() => {
+      if (Date.now() - lastHistoryActivityRef.current >= historyTimeoutMinutes * 60 * 1000) {
+        lockHistory();
+        setToast("Encrypted history locked after inactivity.");
+      }
+    }, 1000);
+    const handleVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        lockHistory();
+        setToast("Encrypted history locked when the app was hidden.");
+      } else lastHistoryActivityRef.current = Date.now();
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      events.forEach((event) => window.removeEventListener(event, markActivity));
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [historyTimeoutMinutes, historyUnlocked]);
+
+  const submitHistoryAccess = useCallback(async (event) => {
+    event.preventDefault();
+    setHistoryError(null);
+    if (historyFormMode === "setup" && historyPasscode !== historyConfirmPasscode) {
+      setHistoryError("Passcodes do not match.");
+      return;
+    }
+    setHistoryBusy(true);
+    try {
+      const api = await historyApi();
+      const key = await api.setupOrUnlockHistory(historyPasscode, { create: historyFormMode === "setup" });
+      historyKeyRef.current = key;
+      await api.migrateLegacyHistory(key);
+      const records = await api.listHistoryRecords(key);
+      setHistoryRecords(records);
+      setHistoryUnlocked(true);
+      setHistoryFormMode("closed");
+      setHistoryPasscode("");
+      setHistoryConfirmPasscode("");
+      await refreshHistoryStatus();
+      setToast(t("history") + " ready.");
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "Encrypted history is unavailable.");
+    } finally {
+      setHistoryBusy(false);
+    }
+  }, [historyConfirmPasscode, historyFormMode, historyPasscode, refreshHistoryStatus, t]);
+
+  const lockHistory = useCallback(() => {
+    historyKeyRef.current = null;
+    setHistoryUnlocked(false);
+    setHistoryRecords([]);
+    setSymptomNote("");
+    setMedicationNote("");
+    setSymptomTimeline([]);
+    setRecoveryPassphrase("");
+    setRecoveryFile(null);
+    setRecoveryMode("closed");
+  }, []);
+
+  const confirmResetHistory = useCallback(async () => {
+    setHistoryBusy(true);
+    setHistoryError(null);
+    try {
+      await (await historyApi()).resetHistory();
+      historyKeyRef.current = null;
+      setHistoryStatus({ available: Boolean(window.indexedDB && window.crypto?.subtle && window.crypto?.getRandomValues), configured: false });
+      setHistoryUnlocked(false);
+      setHistoryRecords([]);
+      setHistoryFormMode("closed");
+      setHistoryResetPending(false);
+      setSymptomTimeline([]);
+      setToast("Encrypted history deleted.");
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "History could not be deleted.");
+    } finally {
+      setHistoryBusy(false);
+    }
+  }, []);
+
   // ── Capture snapshot ──
   const capture = useCallback(() => {
     const video = videoRef.current;
@@ -193,26 +345,38 @@ export default function HealthScanApp() {
     reader.readAsDataURL(file);
   }, []);
 
-  // ── Poll lighting while camera is live ──
+  // ── Poll the cheap camera preflight sample while camera is live ──
   useEffect(() => {
     if (phase !== "camera") {
       clearInterval(lightingIntervalRef.current);
       lightingIntervalRef.current = null;
+      setPreviewState({ cameraReady: false, frameReady: false, bowlVisible: false, lighting: "unknown", detail: "unknown", averageLuminance: 0, detailScore: 0 });
       setLightingStatus(null);
       return;
     }
-    // Create a persistent off-screen canvas for brightness sampling
     if (!scratchCanvasRef.current) {
       scratchCanvasRef.current = document.createElement("canvas");
     }
     const tick = () => {
-      const result = measureBrightness(videoRef.current, scratchCanvasRef.current);
-      if (result) setLightingStatus(result);
+      const video = videoRef.current;
+      const cameraReady = Boolean(video && video.readyState >= 2 && video.videoWidth && video.videoHeight);
+      if (!cameraReady) {
+        setPreviewState((current) => ({ ...current, cameraReady: false, frameReady: false }));
+        return;
+      }
+      const canvas = scratchCanvasRef.current;
+      canvas.width = PREVIEW_DIM;
+      canvas.height = Math.max(1, Math.round(PREVIEW_DIM * (video.videoHeight / video.videoWidth)));
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const preview = calculatePreviewQuality(ctx.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height, bowlMask);
+      setPreviewState({ cameraReady: true, ...preview });
+      setLightingStatus({ status: preview.lighting, value: preview.averageLuminance });
     };
-    tick(); // immediate first read
+    tick();
     lightingIntervalRef.current = setInterval(tick, 600);
     return () => { clearInterval(lightingIntervalRef.current); lightingIntervalRef.current = null; };
-  }, [phase]);
+  }, [bowlMask, phase]);
 
   // ── Run analysis when scanning ──
   useEffect(() => {
@@ -351,6 +515,9 @@ export default function HealthScanApp() {
     setScanTimestamp(null);
     setCameraError(null);
     setFeedbackChoice(null);
+    setSymptomNote("");
+    setMedicationNote("");
+    historyRecordIdRef.current = null;
     setBowlMask({ ...scanAnalysis.BOWL_MASK });
     setCapturedBowlMask({ ...scanAnalysis.BOWL_MASK });
     setPhase("home");
@@ -362,6 +529,9 @@ export default function HealthScanApp() {
     setScanQuality({ status: "unknown", reasons: [] });
     setAnalysisError(null);
     setFeedbackChoice(null);
+    setSymptomNote("");
+    setMedicationNote("");
+    historyRecordIdRef.current = null;
     startCamera();
   }, [startCamera]);
 
@@ -385,6 +555,9 @@ export default function HealthScanApp() {
       toastTimeoutRef.current = null;
     };
   }, [toast]);
+
+  useEffect(() => { saveLanguagePreference(window.localStorage, language); }, [language]);
+  useEffect(() => { saveAccessibilityPreferences(window.localStorage, accessibilityPrefs); }, [accessibilityPrefs]);
 
   // ── Auto-open camera from shortcut link ──
   useEffect(() => {
@@ -444,31 +617,41 @@ export default function HealthScanApp() {
     return () => { cancelled = true; };
   }, [phase]);
 
-  // Persist summaries only when the user explicitly opts in. Images never enter
-  // localStorage; users can clear this history independently of scan exports.
   useEffect(() => {
-    try {
-      window.localStorage.setItem(`${HISTORY_STORAGE_KEY}:enabled`, historyEnabled ? "1" : "0");
-      if (historyEnabled) window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(historyRecords));
-    } catch {
-      setToast("This browser blocked local history storage.");
-    }
-  }, [historyEnabled, historyRecords]);
-
-  useEffect(() => {
-    if (phase !== "results" || !historyEnabled || !scanTimestamp) return;
+    if (phase !== "results" || !historyUnlocked || !scanTimestamp || !historyKeyRef.current) return;
     const severity = detections.some((item) => item.severity === "urgent")
       ? "urgent" : detections.some((item) => item.severity === "warning") ? "warning" : detections.length ? "caution" : null;
     const record = {
-      id: scanTimestamp,
+      id: historyRecordIdRef.current,
       timestamp: scanTimestamp,
       status: analysisError ? "unavailable" : scanQuality.status === "inconclusive" ? "inconclusive" : detections.length ? "markers" : "clear",
       severity,
       detectionLabels: detections.map((item) => item.label),
       sampleType: sampleTypeOverride || sampleType,
+      annotations: { symptoms: symptomNote, medications: medicationNote, timeline: symptomTimeline },
     };
-    setHistoryRecords((current) => [record, ...current.filter((item) => item.id !== record.id)].slice(0, 20));
-  }, [analysisError, detections, historyEnabled, phase, sampleType, sampleTypeOverride, scanQuality, scanTimestamp]);
+    let cancelled = false;
+    historyApi().then(async (api) => {
+      record.id = historyRecordIdRef.current || (historyRecordIdRef.current = api.createHistoryRecordId());
+      return api.saveHistoryRecord(historyKeyRef.current, record);
+    }).then((saved) => {
+      if (!cancelled) setHistoryRecords((current) => [saved, ...current.filter((item) => item.id !== saved.id)].slice(0, 50));
+    }).catch(() => {
+      if (!cancelled) setToast("The encrypted summary could not be saved.");
+    });
+    return () => { cancelled = true; };
+  }, [analysisError, detections, historyUnlocked, medicationNote, phase, sampleType, sampleTypeOverride, scanQuality, scanTimestamp, symptomNote, symptomTimeline]);
+
+  useEffect(() => {
+    if (phase !== "results" || !scanTimestamp || telemetryRecordedForRef.current === scanTimestamp) return;
+    telemetryRecordedForRef.current = scanTimestamp;
+    telemetryApi().then(({ recordTelemetryEvent }) => recordTelemetryEvent(window.localStorage, {
+      eventType: "scan_quality",
+      source: scanSource === "photo" ? "photo" : "camera",
+      qualityStatus: scanQuality.status === "inconclusive" ? "inconclusive" : scanQuality.status === "ok" ? "ok" : "unknown",
+      reasonCodes: scanQuality.reasons.map((reason) => reason.includes("dark") ? "dark" : reason.includes("bright") || reason.includes("glare") ? "bright" : reason.includes("detail") || reason.includes("blur") ? "low-detail" : "frame").slice(0, 4),
+    })).catch(() => {});
+  }, [phase, scanQuality, scanSource, scanTimestamp]);
 
   const saveImage = useCallback(() => {
     const canvas = overlayCanvasRef.current;
@@ -675,12 +858,90 @@ export default function HealthScanApp() {
 
   const scanShortcutUrl = `${window.location.origin}${window.location.pathname}?scan=1`;
 
+  const addTimelineEvent = useCallback(() => {
+    setSymptomTimeline((current) => current.length >= 30 ? current : [...current, {
+      id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      eventDate: new Date().toISOString().slice(0, 10),
+      category: "other",
+      severity: "unknown",
+      context: "",
+    }]);
+  }, []);
+
+  const updateTimelineEvent = useCallback((id, field, value) => {
+    setSymptomTimeline((current) => current.map((event) => event.id === id ? { ...event, [field]: String(value).slice(0, field === "context" ? 300 : 40) } : event));
+  }, []);
+
+  const removeTimelineEvent = useCallback((id) => {
+    setSymptomTimeline((current) => current.filter((event) => event.id !== id));
+  }, []);
+
+  const downloadTextFile = useCallback((filename, content, type = "application/json") => {
+    const link = document.createElement("a");
+    link.download = filename;
+    link.href = URL.createObjectURL(new Blob([content], { type }));
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(link.href), 0);
+  }, []);
+
+  const exportRecoveryBackup = useCallback(async () => {
+    if (!historyUnlocked || !historyKeyRef.current || recoveryPassphrase.length < 12) {
+      setRecoveryError("Unlock history and enter a separate recovery passphrase of at least 12 characters.");
+      return;
+    }
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    try {
+      downloadTextFile("healthscan-history-recovery.json", await (await historyApi()).exportHistoryBackup(historyKeyRef.current, recoveryPassphrase), "application/json");
+      setRecoveryPassphrase("");
+      setRecoveryMode("closed");
+      setToast("Encrypted recovery backup downloaded. Keep the separate passphrase safe.");
+    } catch (error) {
+      setRecoveryError(error instanceof Error ? error.message : "Recovery backup could not be created.");
+    } finally { setRecoveryBusy(false); }
+  }, [downloadTextFile, historyUnlocked, recoveryPassphrase]);
+
+  const importRecoveryBackup = useCallback(async () => {
+    if (!historyUnlocked || !historyKeyRef.current || !recoveryFile || recoveryPassphrase.length < 12) {
+      setRecoveryError("Unlock history, choose a recovery file, and enter its separate recovery passphrase.");
+      return;
+    }
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    try {
+      const api = await historyApi();
+      const count = await api.importHistoryBackup(historyKeyRef.current, await recoveryFile.text(), recoveryPassphrase);
+      setHistoryRecords(await api.listHistoryRecords(historyKeyRef.current));
+      setRecoveryPassphrase("");
+      setRecoveryFile(null);
+      setRecoveryMode("closed");
+      setToast(`${count} encrypted summaries restored.`);
+    } catch (error) {
+      setRecoveryError(error instanceof Error ? error.message : "Recovery backup could not be imported.");
+    } finally { setRecoveryBusy(false); }
+  }, [historyUnlocked, recoveryFile, recoveryPassphrase]);
+
+  const setTelemetryPreference = useCallback(async (enabled) => {
+    const next = (await telemetryApi()).setTelemetryOptIn(window.localStorage, enabled);
+    setTelemetryOptInState(next);
+  }, []);
+
+  const downloadTelemetry = useCallback(async () => {
+    downloadTextFile("healthscan-quality-telemetry.json", (await telemetryApi()).createTelemetryExport(window.localStorage));
+  }, [downloadTextFile]);
+
   // ────────────────────────────────────────────────────────────────────────────
   // RENDER
   // ────────────────────────────────────────────────────────────────────────────
 
   return (
-    <div ref={screenRef} style={styles.root} tabIndex={-1}>
+    <div
+      ref={screenRef}
+      className={rootClass}
+      data-text-size={accessibilityPrefs.textSize}
+      style={{ ...styles.root, "--hs-text-scale": ACCESSIBILITY_SCALE[accessibilityPrefs.textSize] || 1 }}
+      tabIndex={-1}
+    >
       {/* Hidden canvas for processing */}
       <canvas ref={canvasRef} style={{ display: "none" }} />
       <input
@@ -706,14 +967,14 @@ export default function HealthScanApp() {
               <path d="M28 36 L33 41 L44 30" stroke="#22c55e" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" fill="none" />
             </svg>
           </div>
-          <h1 style={styles.homeTitle}>HealthScan</h1>
-          <p style={styles.homeSub}>Toilet health monitoring via blood detection in urine & stool</p>
+          <h1 style={styles.homeTitle}>{t("appName")}</h1>
+          <p style={styles.homeSub}>{t("homeSubtitle")}</p>
           <div style={styles.infoCard}>
             <p style={styles.infoText}>
               This app screens for <strong>blood-like color markers</strong> — ranging from <span style={{ color: "#ef4444" }}>bright red</span> to <span style={{ color: "#9ca3af" }}>black</span> — in urine or stool.
             </p>
             <p style={{ ...styles.infoText, marginTop: 8, fontSize: 12, color: "#6b7280" }}>
-              ⚕️ It cannot confirm blood or diagnose a condition. If you feel faint, have severe pain, see clots, vomit blood, or notice black/tarry stool, seek urgent medical care.
+              ⚕️ {t("nonDiagnostic")}
             </p>
           </div>
           {cameraError && <div style={styles.errorCard} role="alert">{cameraError}</div>}
@@ -721,50 +982,33 @@ export default function HealthScanApp() {
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 8 }}>
               <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
             </svg>
-            Start Scan
+            {t("startScan")}
           </button>
           <button style={styles.secondaryBtn} onClick={() => fileInputRef.current?.click()}>
-            Use a photo instead
+            {t("usePhoto")}
           </button>
 
-          <details style={styles.privacyDetails}>
-            <summary style={styles.privacySummary}>Privacy & limitations</summary>
-            <p style={styles.privacyText}>Photos are analyzed in your browser by this app and are not uploaded by HealthScan. Saving, exporting, or sharing a scan sends it to the destination you choose. The QR code opens the app only; it does not contain your scan.</p>
-            <p style={styles.privacyText}>This is a screening aid, not a medical device or diagnosis. Delete downloaded files separately from your device.</p>
-          </details>
-
-          <details style={styles.privacyDetails}>
-            <summary style={styles.privacySummary}>Optional on-device history{historyRecords.length ? ` (${historyRecords.length})` : ""}</summary>
-            <label style={styles.historyToggle}>
-              <input
-                type="checkbox"
-                checked={historyEnabled}
-                onChange={(event) => {
-                  const enabled = event.target.checked;
-                  setHistoryEnabled(enabled);
-                  if (!enabled) {
-                    setHistoryRecords([]);
-                    try { window.localStorage.removeItem(HISTORY_STORAGE_KEY); } catch {}
-                  }
-                }}
-              />
-              Save summary-only history on this device
-            </label>
-            <p style={styles.privacyText}>Only dates, sample type, and marker summaries are saved. Raw scan images are never stored in history.</p>
-            {historyRecords.length > 0 && (
-              <>
-                <div style={styles.historyList}>
-                  {historyRecords.slice(0, 5).map((record) => (
-                    <div key={record.id} style={styles.historyRow}>
-                      <span>{new Date(record.timestamp).toLocaleDateString()}</span>
-                      <span>{record.status === "markers" ? `${record.detectionLabels.length} marker${record.detectionLabels.length === 1 ? "" : "s"}` : record.status}</span>
-                    </div>
-                  ))}
-                </div>
-                <button style={styles.clearHistoryBtn} onClick={() => { setHistoryRecords([]); try { window.localStorage.removeItem(HISTORY_STORAGE_KEY); } catch {} }}>Delete history</button>
-              </>
-            )}
-          </details>
+          <SettingsErrorBoundary styles={styles} t={t} onRetry={() => setSettingsLoadKey((key) => key + 1)}>
+            <Suspense fallback={<p style={styles.privacyText} role="status" aria-live="polite">Loading privacy and settings…</p>}>
+            <SettingsPanel key={settingsLoadKey}
+              styles={styles} t={t} languages={LANGUAGES} language={language} setLanguage={setLanguage}
+              accessibilityPrefs={accessibilityPrefs} setAccessibilityPrefs={setAccessibilityPrefs}
+              historyStatus={historyStatus} historyRecords={historyRecords} historyUnlocked={historyUnlocked}
+              historyFormMode={historyFormMode} setHistoryFormMode={setHistoryFormMode} historyPasscode={historyPasscode}
+              setHistoryPasscode={setHistoryPasscode} historyConfirmPasscode={historyConfirmPasscode}
+              setHistoryConfirmPasscode={setHistoryConfirmPasscode} historyError={historyError} historyBusy={historyBusy}
+              historyResetPending={historyResetPending} setHistoryResetPending={setHistoryResetPending}
+              submitHistoryAccess={submitHistoryAccess} lockHistory={lockHistory} confirmResetHistory={confirmResetHistory}
+              historyTimeoutMinutes={historyTimeoutMinutes} updateHistoryTimeout={updateHistoryTimeout}
+              recoveryMode={recoveryMode} setRecoveryMode={setRecoveryMode} recoveryPassphrase={recoveryPassphrase}
+              setRecoveryPassphrase={setRecoveryPassphrase} recoveryFile={recoveryFile} setRecoveryFile={setRecoveryFile}
+              recoveryError={recoveryError} recoveryBusy={recoveryBusy} exportRecoveryBackup={exportRecoveryBackup}
+              importRecoveryBackup={importRecoveryBackup} telemetryOptIn={telemetryOptIn}
+              setTelemetryPreference={setTelemetryPreference} setTelemetryPreferenceState={setTelemetryOptInState} downloadTelemetry={downloadTelemetry}
+              refreshHistoryStatus={refreshHistoryStatus}
+            />
+            </Suspense>
+          </SettingsErrorBoundary>
 
           <div style={styles.shortcutCard}>
             <p style={styles.shortcutTitle}>iOS Scan Shortcut</p>
@@ -783,13 +1027,13 @@ export default function HealthScanApp() {
 
       {/* ── CAMERA ── */}
       {phase === "camera" && (() => {
-        const canCapture = !lightingStatus || lightingStatus.status === "ok";
+        const hardBlocker = preflightItems.find((item) => item.hardBlocker);
         const lightColor = !lightingStatus ? "#64748b" : lightingStatus.status === "ok" ? "#22c55e" : "#f59e0b";
         const lightIcon = !lightingStatus ? "…" : lightingStatus.status === "ok" ? "☀️" : lightingStatus.status === "dim" ? "🌑" : "💡";
-        const lightMsg = !lightingStatus ? "Checking lighting…"
-          : lightingStatus.status === "dim" ? "Too dim — brighten the light"
-          : lightingStatus.status === "bright" ? "Too bright — reduce direct light"
-          : "Lighting OK";
+        const lightMsg = !lightingStatus ? t("checking")
+          : lightingStatus.status === "dim" ? t("lightingDim")
+          : lightingStatus.status === "bright" ? t("lightingBright")
+          : t("lightingOk");
         // Normalized bar fill: map [0..255] → [0..100]%
         const barPct = lightingStatus ? Math.round((lightingStatus.value / 255) * 100) : 50;
         const bowlGuideStyle = {
@@ -805,7 +1049,6 @@ export default function HealthScanApp() {
           <div style={styles.screen}>
             <div style={styles.cameraContainer}>
               <video ref={videoRef} style={styles.video} playsInline autoPlay muted aria-label="Live camera view of the toilet bowl" />
-              {/* Viewfinder corners */}
               <div style={styles.viewfinder} aria-hidden="true"><div style={bowlGuideStyle} /></div>
               {/* Lighting indicator bar — sits at the top of the viewfinder */}
               <div style={styles.lightingBar}>
@@ -825,10 +1068,10 @@ export default function HealthScanApp() {
                 <span style={{ ...styles.lightingLabel, color: lightColor }}>{lightMsg}</span>
               </div>
               {/* Bottom hint */}
-              <div style={styles.cameraHint}>Keep the sample inside the oval</div>
+              <div style={styles.cameraHint}>{t("keepInside")}</div>
             </div>
             <div style={styles.cameraActions}>
-              <button style={styles.cancelBtn} onClick={() => { stopCamera(); setPhase("home"); }}>Cancel</button>
+              <button style={styles.cancelBtn} onClick={() => { stopCamera(); setPhase("home"); }}>{t("cancel")}</button>
               <button
                 style={{ ...styles.captureBtn, ...(canCapture ? {} : styles.captureBtnDisabled) }}
                 onClick={canCapture ? capture : undefined}
@@ -838,16 +1081,21 @@ export default function HealthScanApp() {
               </button>
               <div style={{ width: 56 }} />
             </div>
-            {/* Persistent warning text below buttons when lighting is bad */}
-            {!canCapture && (
+            {hardBlocker && (
               <p style={styles.lightingWarning}>
-                {lightingStatus.status === "dim"
-                  ? "Move closer to a light source or turn on the bathroom light."
-                  : "Step back or turn off direct overhead light to reduce glare."}
+                {hardBlocker.id === "camera" ? t("cameraWaiting") : t("frameWaiting")}
               </p>
             )}
+            <div style={styles.preflightCard} aria-label="Camera preflight" aria-live="polite">
+              {preflightItems.map((item) => {
+                const label = item.id === "camera" ? t("cameraReady") : item.id === "frame" ? t("frameReady") : item.id === "lighting" ? t("lighting") : t("detail");
+                const statusText = item.status === "ready" ? t("ready") : item.status === "checking" ? t("checking") : item.hardBlocker ? "Blocked" : t("advisory");
+                return <div key={item.id} style={styles.preflightRow}><span aria-hidden="true">{item.status === "ready" ? "✓" : item.hardBlocker ? "!" : "•"}</span><span>{label}</span><span style={item.hardBlocker ? styles.preflightBlocked : styles.preflightAdvisory}>{statusText}</span></div>;
+              })}
+              {!hardBlocker && preflightItems.some((item) => item.status === "advisory") && <p style={styles.privacyText}>{t("advisoryNote")}</p>}
+            </div>
             <details style={styles.frameControls}>
-              <summary style={styles.privacySummary}>Adjust scan area</summary>
+              <summary style={styles.privacySummary}>{t("adjustArea")}</summary>
               <p style={styles.privacyText}>Move and resize the oval to cover the bowl area you want analyzed.</p>
               <label style={styles.rangeLabel}>Horizontal position
                 <input type="range" min="0.22" max="0.78" step="0.01" value={bowlMask.centerX} onChange={(event) => updateBowlMask("centerX", event.target.value)} />
@@ -887,7 +1135,7 @@ export default function HealthScanApp() {
         <div style={styles.screen}>
           <div style={styles.resultsHeader}>
             <button style={styles.backBtn} onClick={reset}>← Back</button>
-            <span style={styles.resultsTitle}>Scan Results</span>
+            <span style={styles.resultsTitle}>{t("results")}</span>
           </div>
           <div style={styles.resultImageWrap}>
             <canvas ref={overlayCanvasRef} style={styles.resultCanvas} role="img" aria-label="Captured scan with detected color markers highlighted" />
@@ -901,16 +1149,16 @@ export default function HealthScanApp() {
           ) : scanQuality.status === "inconclusive" ? (
             <div style={styles.inconclusiveCard} role="status">
               <div style={styles.inconclusiveIcon}>!</div>
-              <p style={styles.cleanTitle}>Inconclusive scan</p>
+              <p style={styles.cleanTitle}>{t("inconclusive")}</p>
               <p style={styles.cleanSub}>The image quality was not sufficient to interpret this scan reliably.</p>
               <ul style={styles.reasonList}>{scanQuality.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-              <button style={styles.primaryBtn} onClick={retake}>Retake scan</button>
+              <button style={styles.primaryBtn} onClick={retake}>{t("retake")}</button>
             </div>
           ) : detections.length === 0 ? (
             <div style={styles.cleanCard}>
               <div style={styles.cleanIcon}>✓</div>
-              <p style={styles.cleanTitle}>No blood-like markers detected</p>
-              <p style={styles.cleanSub}>This does not rule out blood or a medical condition. Repeat the scan if symptoms continue and speak with a healthcare professional.</p>
+              <p style={styles.cleanTitle}>{t("noMarkers")}</p>
+              <p style={styles.cleanSub}>{t("notDiagnosis")} Repeat the scan if symptoms continue and speak with a healthcare professional.</p>
             </div>
           ) : (
             <>
@@ -961,7 +1209,7 @@ export default function HealthScanApp() {
                 <p style={styles.medicalTitle}>⚕️ What this may indicate</p>
                 <p style={styles.medicalText}>{SEVERITY_INFO[highestSeverity].desc}</p>
                 <p style={{ ...styles.medicalText, marginTop: 6, fontStyle: "italic", color: "#6b7280" }}>
-                  This tool identifies color patterns only. It cannot confirm blood or diagnose a condition. Seek urgent care for severe symptoms.
+                  {t("nonDiagnostic")}
                 </p>
               </div>
             </>
@@ -1000,6 +1248,35 @@ export default function HealthScanApp() {
           </div>
 
           <p style={styles.scanMeta}>Scanned {scanTimestamp ? new Date(scanTimestamp).toLocaleString() : "just now"} · Sample type: {(sampleTypeOverride || sampleType) === "both" ? "Urine + stool" : (sampleTypeOverride || sampleType)}</p>
+
+          <div style={styles.medicalNote} role="note">
+            <p style={styles.medicalTitle}>{t("urgentTitle")}</p>
+            <p style={styles.medicalText}>{t("urgentCopy")}</p>
+          </div>
+
+          {historyUnlocked && (
+            <div style={styles.notesCard}>
+              <p style={styles.shortcutTitle}>{t("annotate")}</p>
+              <label style={styles.formLabel}>{t("symptoms")}
+                <textarea value={symptomNote} onChange={(event) => setSymptomNote(event.target.value.slice(0, 1000))} style={styles.notesInput} maxLength={1000} />
+              </label>
+              <label style={styles.formLabel}>{t("medications")}
+                <textarea value={medicationNote} onChange={(event) => setMedicationNote(event.target.value.slice(0, 1000))} style={styles.notesInput} maxLength={1000} />
+              </label>
+              <div style={styles.timelineEditor}>
+                <span style={styles.formLabel}>Symptom timeline (up to 30 events)</span>
+                {symptomTimeline.map((event) => <div key={event.id} style={styles.timelineRow}>
+                  <input type="date" value={event.eventDate} onChange={(input) => updateTimelineEvent(event.id, "eventDate", input.target.value)} aria-label="Event date" style={styles.formInput} />
+                  <select value={event.category} onChange={(input) => updateTimelineEvent(event.id, "category", input.target.value)} aria-label="Symptom category" style={styles.preferenceSelect}>{SYMPTOM_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}</select>
+                  <select value={event.severity} onChange={(input) => updateTimelineEvent(event.id, "severity", input.target.value)} aria-label="Symptom severity" style={styles.preferenceSelect}>{SYMPTOM_SEVERITIES.map((severity) => <option key={severity} value={severity}>{severity}</option>)}</select>
+                  <input value={event.context} maxLength={300} onChange={(input) => updateTimelineEvent(event.id, "context", input.target.value)} aria-label="Event context" placeholder="Context" style={styles.formInput} />
+                  <button type="button" style={styles.ghostBtn} onClick={() => removeTimelineEvent(event.id)} aria-label="Remove timeline event">Remove</button>
+                </div>)}
+                <button type="button" style={styles.ghostBtn} onClick={addTimelineEvent} disabled={symptomTimeline.length >= 30}>Add symptom event</button>
+              </div>
+              <p style={styles.privacyText}>{t("saveNotes")}</p>
+            </div>
+          )}
 
           <div style={styles.feedbackCard}>
             <p style={styles.shortcutTitle}>Help improve scan quality</p>
@@ -1054,6 +1331,11 @@ export default function HealthScanApp() {
           outline: 3px solid #93c5fd;
           outline-offset: 3px;
         }
+        .hs-root[data-text-size="large"] p, .hs-root[data-text-size="large"] label, .hs-root[data-text-size="large"] button, .hs-root[data-text-size="large"] summary, .hs-root[data-text-size="large"] input, .hs-root[data-text-size="large"] select, .hs-root[data-text-size="large"] textarea { font-size: calc(1em * var(--hs-text-scale)) !important; }
+        .hs-root[data-text-size="extra-large"] p, .hs-root[data-text-size="extra-large"] label, .hs-root[data-text-size="extra-large"] button, .hs-root[data-text-size="extra-large"] summary, .hs-root[data-text-size="extra-large"] input, .hs-root[data-text-size="extra-large"] select, .hs-root[data-text-size="extra-large"] textarea { font-size: calc(1em * var(--hs-text-scale)) !important; }
+        .hs-high-contrast { background: #000 !important; color: #fff !important; }
+        .hs-high-contrast details, .hs-high-contrast .infoCard, .hs-high-contrast .privacyDetails, .hs-high-contrast .medicalNote, .hs-high-contrast .notesCard, .hs-high-contrast .preflightCard { border-color: #fff !important; }
+        .hs-high-contrast p, .hs-high-contrast span, .hs-high-contrast label, .hs-high-contrast summary { color: #fff !important; }
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after {
             animation-duration: 0.01ms !important;
@@ -1107,6 +1389,8 @@ const styles = {
   },
   privacySummary: { cursor: "pointer", color: "#e2e8f0", fontSize: 13, fontWeight: 600 },
   privacyText: { margin: "10px 0 0", fontSize: 12, lineHeight: 1.55, color: "#94a3b8" },
+  preferenceRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 10, color: "#cbd5e1", fontSize: 12.5 },
+  preferenceSelect: { background: "#1e293b", color: "#e2e8f0", border: "1px solid #475569", borderRadius: 7, padding: "6px 8px", fontSize: 12 },
   historyToggle: { display: "flex", alignItems: "center", gap: 8, marginTop: 12, color: "#cbd5e1", fontSize: 12.5, lineHeight: 1.4 },
   historyList: { display: "flex", flexDirection: "column", gap: 6, marginTop: 12 },
   historyRow: { display: "flex", justifyContent: "space-between", gap: 12, color: "#94a3b8", fontSize: 11.5, borderTop: "1px solid #1e293b", paddingTop: 6 },
@@ -1118,6 +1402,14 @@ const styles = {
   feedbackChoices: { display: "flex", gap: 8, marginTop: 12 },
   feedbackBtn: { flex: 1, background: "#1e293b", color: "#cbd5e1", border: "1px solid #475569", borderRadius: 8, padding: "8px 10px", fontSize: 12, cursor: "pointer" },
   feedbackBtnActive: { background: "#14532d", borderColor: "#22c55e", color: "#dcfce7" },
+  historyForm: { display: "flex", flexDirection: "column", gap: 8, marginTop: 12 },
+  formLabel: { display: "flex", flexDirection: "column", gap: 5, color: "#cbd5e1", fontSize: 12 },
+  formInput: { background: "#0f172a", color: "#f8fafc", border: "1px solid #475569", borderRadius: 7, padding: "8px 10px", fontSize: 14 },
+  formActions: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+  errorText: { margin: 0, color: "#fca5a5", fontSize: 12 },
+  confirmCard: { marginTop: 12, background: "#451a1a", border: "1px solid #7f1d1d", borderRadius: 10, padding: "10px 12px" },
+  notesCard: { width: "100%", boxSizing: "border-box", background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 },
+  notesInput: { minHeight: 58, resize: "vertical", background: "#1e293b", color: "#f8fafc", border: "1px solid #475569", borderRadius: 7, padding: "8px 10px", font: "inherit" },
 
   // BUTTONS
   primaryBtn: {
@@ -1159,6 +1451,10 @@ const styles = {
     borderRadius: 12, padding: "12px 14px", color: "#94a3b8",
   },
   rangeLabel: { display: "grid", gridTemplateColumns: "1fr 120px", alignItems: "center", gap: 10, marginTop: 10, color: "#cbd5e1", fontSize: 12 },
+  preflightCard: { width: "100%", maxWidth: 320, background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 7 },
+  preflightRow: { display: "grid", gridTemplateColumns: "18px 1fr auto", alignItems: "center", gap: 6, color: "#cbd5e1", fontSize: 12 },
+  preflightAdvisory: { color: "#fbbf24", fontWeight: 600 },
+  preflightBlocked: { color: "#fca5a5", fontWeight: 600 },
   corner: (pos) => {
     const base = { position: "absolute", width: 24, height: 24, borderColor: "#22c55e", borderStyle: "solid" };
     const map = {

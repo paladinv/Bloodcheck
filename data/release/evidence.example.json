@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "release": "example-not-approved",
+  "gates": {
+    "clinical": { "status": "pending", "signedOff": false, "evidenceRef": "", "signedBy": "", "signedAt": "" },
+    "security": { "status": "pending", "signedOff": false, "evidenceRef": "", "signedBy": "", "signedAt": "" },
+    "accessibility": { "status": "pending", "signedOff": false, "evidenceRef": "", "signedBy": "", "signedAt": "" },
+    "device": { "status": "pending", "signedOff": false, "evidenceRef": "", "signedBy": "", "signedAt": "" },
+    "performance": { "status": "pending", "signedOff": false, "evidenceRef": "", "signedBy": "", "signedAt": "" }
+  }
+}

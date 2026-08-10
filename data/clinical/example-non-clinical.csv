@@ -1,0 +1,6 @@
+case_id,actual,predicted,reviewer_a,reviewer_b,adjudicated
+EXAMPLE-001,positive,positive,positive,positive,positive
+EXAMPLE-002,positive,negative,positive,positive,positive
+EXAMPLE-003,negative,negative,negative,negative,negative
+EXAMPLE-004,negative,positive,negative,negative,negative
+EXAMPLE-005,positive,inconclusive,positive,positive,positive

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "runs": [
+    { "platform": "ios-safari", "device": "REPLACE_WITH_DEVICE", "scenario": "allow", "outcome": "not-run", "notes": "" },
+    { "platform": "ios-safari", "device": "REPLACE_WITH_DEVICE", "scenario": "deny", "outcome": "not-run", "notes": "" },
+    { "platform": "ios-safari", "device": "REPLACE_WITH_DEVICE", "scenario": "revoke", "outcome": "not-run", "notes": "" },
+    { "platform": "ios-safari", "device": "REPLACE_WITH_DEVICE", "scenario": "background-resume", "outcome": "not-run", "notes": "" },
+    { "platform": "ios-safari", "device": "REPLACE_WITH_DEVICE", "scenario": "pwa-offline", "outcome": "not-run", "notes": "" },
+    { "platform": "ios-safari", "device": "REPLACE_WITH_DEVICE", "scenario": "photo-fallback", "outcome": "not-run", "notes": "" },
+    { "platform": "android-chrome", "device": "REPLACE_WITH_DEVICE", "scenario": "allow", "outcome": "not-run", "notes": "" },
+    { "platform": "android-chrome", "device": "REPLACE_WITH_DEVICE", "scenario": "deny", "outcome": "not-run", "notes": "" },
+    { "platform": "android-chrome", "device": "REPLACE_WITH_DEVICE", "scenario": "revoke", "outcome": "not-run", "notes": "" },
+    { "platform": "android-chrome", "device": "REPLACE_WITH_DEVICE", "scenario": "background-resume", "outcome": "not-run", "notes": "" },
+    { "platform": "android-chrome", "device": "REPLACE_WITH_DEVICE", "scenario": "pwa-offline", "outcome": "not-run", "notes": "" },
+    { "platform": "android-chrome", "device": "REPLACE_WITH_DEVICE", "scenario": "photo-fallback", "outcome": "not-run", "notes": "" }
+  ]
+}

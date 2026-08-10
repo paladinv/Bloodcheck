@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "datasetVersion": "example-not-clinical-0.1",
+  "protocolVersion": "draft-1",
+  "clinicianReviewComplete": false,
+  "strata": ["device_family", "browser", "lighting", "toilet_material", "sample_type", "confounder"],
+  "acceptanceCriteria": {
+    "minimumCases": "Predefine with clinician/statistical review",
+    "sensitivityLowerBound": "Predefine before unblinding",
+    "specificityLowerBound": "Predefine before unblinding",
+    "maximumInconclusiveRate": "Predefine before unblinding"
+  }
+}

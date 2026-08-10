@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- Add secure-history, localization, accessibility-preference, camera-preflight, clinical-metrics, and release-check scaffolding for the next implementation pass.
+
 ## 1.2.2 - 2026-07-27
 - Replace the fixed capture region with an adjustable oval that is carried through worker and fallback analysis.
 - Add opt-in, photo-free scan-quality feedback export; feedback is not uploaded by the app.
